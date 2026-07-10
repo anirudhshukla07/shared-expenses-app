@@ -31,6 +31,87 @@ def calculate_group_balances(group):
     return {name: q(amount) for name, amount in sorted(balances.items())}
 
 
+def calculate_group_balance_details(group):
+    """Return the audit trail behind every member's net balance.
+
+    Positive entries mean the group owes the person; negative entries mean the
+    person owes the group.  Keeping the signs here identical to the summary
+    calculation makes the API straightforward to verify in a live interview.
+    """
+
+    balances = defaultdict(lambda: Decimal("0.00"))
+    entries = defaultdict(list)
+
+    expenses = (
+        Expense.objects.filter(group=group, status=LedgerStatus.POSTED)
+        .select_related("paid_by")
+        .prefetch_related("splits__person")
+        .order_by("date", "id")
+    )
+    for expense in expenses:
+        paid = q(expense.amount_inr)
+        balances[expense.paid_by.name] += paid
+        entries[expense.paid_by.name].append(
+            {
+                "kind": "expense_paid",
+                "date": expense.date.isoformat(),
+                "description": expense.description,
+                "expense_id": expense.id,
+                "amount_inr": str(paid),
+                "explanation": f"Paid {paid} INR for the group",
+            }
+        )
+        for split in expense.splits.all():
+            owed = q(split.amount_owed_inr)
+            balances[split.person.name] -= owed
+            entries[split.person.name].append(
+                {
+                    "kind": "expense_share",
+                    "date": expense.date.isoformat(),
+                    "description": expense.description,
+                    "expense_id": expense.id,
+                    "amount_inr": str(-owed),
+                    "explanation": split.basis or f"Share of {expense.description}",
+                }
+            )
+
+    settlements = (
+        Settlement.objects.filter(group=group, status=LedgerStatus.POSTED)
+        .select_related("paid_by", "paid_to")
+        .order_by("date", "id")
+    )
+    for settlement in settlements:
+        amount = q(settlement.amount_inr)
+        balances[settlement.paid_by.name] += amount
+        balances[settlement.paid_to.name] -= amount
+        entries[settlement.paid_by.name].append(
+            {
+                "kind": "settlement_paid",
+                "date": settlement.date.isoformat(),
+                "description": f"Payment to {settlement.paid_to.name}",
+                "settlement_id": settlement.id,
+                "amount_inr": str(amount),
+                "explanation": settlement.notes or "Settlement paid",
+            }
+        )
+        entries[settlement.paid_to.name].append(
+            {
+                "kind": "settlement_received",
+                "date": settlement.date.isoformat(),
+                "description": f"Payment from {settlement.paid_by.name}",
+                "settlement_id": settlement.id,
+                "amount_inr": str(-amount),
+                "explanation": settlement.notes or "Settlement received",
+            }
+        )
+
+    names = sorted(set(balances) | set(entries))
+    return {
+        name: {"net_inr": str(q(balances[name])), "entries": entries[name]}
+        for name in names
+    }
+
+
 def suggest_settlements(balances):
     debtors = []
     creditors = []

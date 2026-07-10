@@ -78,10 +78,20 @@ def normalize_description(text):
 
 
 class ExpenseImportService:
-    def __init__(self, group, batch, file_path, fx_rates=None):
+    def __init__(
+        self,
+        group,
+        batch,
+        file_path,
+        fx_rates=None,
+        source_sha256=None,
+        import_mode="replace",
+    ):
         self.group = group
         self.batch = batch
         self.file_path = Path(file_path)
+        self.source_sha256 = source_sha256
+        self.import_mode = import_mode
         self.fx_rates = {k.upper(): Decimal(str(v)) for k, v in (fx_rates or settings.DEFAULT_FX_RATES).items()}
         self.expected_start = date.fromisoformat(settings.EXPECTED_IMPORT_START)
         self.expected_end = date.fromisoformat(settings.EXPECTED_IMPORT_END)
@@ -91,6 +101,24 @@ class ExpenseImportService:
 
     def run(self):
         try:
+            # Make rerunning the service on the same batch deterministic.
+            self.batch.total_rows = 0
+            self.batch.posted_rows = 0
+            self.batch.review_rows = 0
+            self.batch.skipped_rows = 0
+            self.batch.status = ImportBatch.Status.PROCESSING
+            self.batch.report_json = {}
+            self.batch.save(
+                update_fields=[
+                    "total_rows",
+                    "posted_rows",
+                    "review_rows",
+                    "skipped_rows",
+                    "status",
+                    "report_json",
+                ]
+            )
+
             rows = self.load_rows()
             self.batch.total_rows = len(rows)
             self.batch.save(update_fields=["total_rows"])
@@ -270,8 +298,12 @@ class ExpenseImportService:
             self.add_report_only(row_number, row_anomalies)
             return
 
-        duplicate_review = self.detect_duplicates(row_number, parsed_date, description, payer_name, amount_inr, participants, row_anomalies)
-        needs_review = duplicate_review or any(a["review"] for a in row_anomalies)
+        duplicate_review = self.detect_duplicates(row_number, parsed_date, description, payer, amount_inr, participants, row_anomalies)
+        if duplicate_review == LedgerStatus.SKIPPED:
+            self.add_report_only(row_number, row_anomalies)
+            return
+
+        needs_review = duplicate_review == LedgerStatus.REVIEW_REQUIRED or any(a["review"] for a in row_anomalies)
         status = LedgerStatus.REVIEW_REQUIRED if needs_review else LedgerStatus.POSTED
 
         expense = Expense.objects.create(
@@ -548,13 +580,18 @@ class ExpenseImportService:
             self.add_report_only(row_number, anomalies)
             return
         paid_to = self.get_or_create_person(recipients[0])
+        duplicate_review = self.detect_settlement_duplicate(row_number, day, payer, paid_to, amount_inr, anomalies)
+        if duplicate_review == LedgerStatus.SKIPPED:
+            self.add_report_only(row_number, anomalies)
+            return
+
         anomalies.append({
             "code": "SETTLEMENT_DETECTED", "severity": ImportAnomaly.Severity.INFO,
             "message": "Row looks like a payment/settlement, not a shared expense.",
             "policy": "Payments are stored separately from expenses.",
             "action": "Created Settlement row.", "review": False,
         })
-        needs_review = any(a["review"] for a in anomalies) or "deposit" in description.lower()
+        needs_review = duplicate_review == LedgerStatus.REVIEW_REQUIRED or any(a["review"] for a in anomalies) or "deposit" in description.lower()
         if "deposit" in description.lower():
             anomalies.append({
                 "code": "DEPOSIT_PAYMENT_DETECTED", "severity": ImportAnomaly.Severity.WARNING,
@@ -584,33 +621,94 @@ class ExpenseImportService:
 
     def detect_duplicates(self, row_number, day, description, payer, amount_inr, participants, anomalies):
         desc = normalize_description(description)
-        exact_key = (day.isoformat(), desc, payer, str(amount_inr), tuple(sorted(participants)))
+        payer_name = payer.name
+        participant_key = tuple(sorted(participants))
+        exact_key = (day.isoformat(), desc, payer_name, str(amount_inr), participant_key)
         if exact_key in self.exact_seen:
             anomalies.append({
                 "code": "DUPLICATE_EXACT", "severity": ImportAnomaly.Severity.WARNING,
                 "message": f"Looks like exact duplicate of row {self.exact_seen[exact_key]}.",
-                "policy": "Do not delete duplicates silently.",
-                "action": "Row requires review and is not posted.", "review": True,
+                "policy": "Exact duplicate rows are not posted twice.",
+                "action": "Skipped duplicate row.", "review": False,
             })
-            return True
+            return LedgerStatus.SKIPPED
         self.exact_seen[exact_key] = row_number
+
+        existing_expenses = (
+            Expense.objects.filter(
+                group=self.group,
+                date=day,
+                status__in=[LedgerStatus.POSTED, LedgerStatus.REVIEW_REQUIRED],
+            )
+            .select_related("paid_by")
+            .prefetch_related("splits__person")
+        )
+        exact_existing = existing_expenses.filter(
+            normalized_description=desc,
+            paid_by=payer,
+            amount_inr=amount_inr,
+        )
+        for expense in exact_existing:
+            existing_participants = tuple(sorted(split.person.name for split in expense.splits.all()))
+            if existing_participants == participant_key:
+                anomalies.append({
+                    "code": "DUPLICATE_EXISTING_LEDGER", "severity": ImportAnomaly.Severity.WARNING,
+                    "message": f"Looks like exact duplicate of an existing ledger row from import row {expense.raw_row_number or 'unknown'}.",
+                    "policy": "Exact duplicate rows already in the ledger are not posted twice.",
+                    "action": "Skipped duplicate row.", "review": False,
+                })
+                return LedgerStatus.SKIPPED
 
         for previous in self.fuzzy_seen:
             same_day = previous["day"] == day
             same_people = set(previous["participants"]) == set(participants)
             similarity = SequenceMatcher(None, previous["desc"], desc).ratio()
             if same_day and same_people and similarity >= 0.62:
-                if previous["amount"] != amount_inr or previous["payer"] != payer:
+                if previous["amount"] != amount_inr or previous["payer"] != payer_name:
                     anomalies.append({
                         "code": "DUPLICATE_FUZZY_AMOUNT_MISMATCH", "severity": ImportAnomaly.Severity.WARNING,
                         "message": f"Possible duplicate of row {previous['row']} with different payer/amount.",
                         "policy": "Human must choose the winning row.",
                         "action": "Row requires review and is not posted.", "review": True,
                     })
-                    self.fuzzy_seen.append({"row": row_number, "day": day, "desc": desc, "payer": payer, "amount": amount_inr, "participants": participants})
-                    return True
-        self.fuzzy_seen.append({"row": row_number, "day": day, "desc": desc, "payer": payer, "amount": amount_inr, "participants": participants})
-        return False
+                    self.fuzzy_seen.append({"row": row_number, "day": day, "desc": desc, "payer": payer_name, "amount": amount_inr, "participants": participants})
+                    return LedgerStatus.REVIEW_REQUIRED
+
+        for expense in existing_expenses:
+            existing_participants = [split.person.name for split in expense.splits.all()]
+            same_people = set(existing_participants) == set(participants)
+            similarity = SequenceMatcher(None, expense.normalized_description, desc).ratio()
+            if same_people and similarity >= 0.62 and (expense.amount_inr != amount_inr or expense.paid_by_id != payer.id):
+                anomalies.append({
+                    "code": "DUPLICATE_EXISTING_FUZZY", "severity": ImportAnomaly.Severity.WARNING,
+                    "message": f"Possible duplicate of an existing ledger row from import row {expense.raw_row_number or 'unknown'} with different payer/amount.",
+                    "policy": "Human must choose the winning row.",
+                    "action": "Row requires review and is not posted.", "review": True,
+                })
+                self.fuzzy_seen.append({"row": row_number, "day": day, "desc": desc, "payer": payer_name, "amount": amount_inr, "participants": participants})
+                return LedgerStatus.REVIEW_REQUIRED
+
+        self.fuzzy_seen.append({"row": row_number, "day": day, "desc": desc, "payer": payer_name, "amount": amount_inr, "participants": participants})
+        return None
+
+    def detect_settlement_duplicate(self, row_number, day, payer, paid_to, amount_inr, anomalies):
+        existing = Settlement.objects.filter(
+            group=self.group,
+            date=day,
+            paid_by=payer,
+            paid_to=paid_to,
+            amount_inr=amount_inr,
+            status__in=[LedgerStatus.POSTED, LedgerStatus.REVIEW_REQUIRED],
+        ).first()
+        if not existing:
+            return False
+        anomalies.append({
+            "code": "DUPLICATE_EXISTING_SETTLEMENT", "severity": ImportAnomaly.Severity.WARNING,
+            "message": f"Looks like duplicate of an existing settlement from import row {existing.raw_row_number or 'unknown'}.",
+            "policy": "Exact duplicate settlement rows already in the ledger are not posted twice.",
+            "action": "Skipped duplicate row.", "review": False,
+        })
+        return LedgerStatus.SKIPPED
 
     def persist_anomalies(self, row_number, anomalies, expense=None, settlement=None):
         for anomaly in anomalies:
@@ -659,13 +757,38 @@ class ExpenseImportService:
             self.batch.skipped_rows += 1
 
     def finish_batch(self):
+        processed_rows = (
+            self.batch.posted_rows
+            + self.batch.review_rows
+            + self.batch.skipped_rows
+        )
+        if processed_rows != self.batch.total_rows:
+            raise RuntimeError(
+                "Import accounting invariant failed: "
+                f"posted ({self.batch.posted_rows}) + "
+                f"review ({self.batch.review_rows}) + "
+                f"skipped ({self.batch.skipped_rows}) "
+                f"!= total ({self.batch.total_rows})."
+            )
+
         self.batch.status = ImportBatch.Status.COMPLETED
         self.batch.report_json = {
             "source_filename": self.batch.source_filename,
+            "source_sha256": self.source_sha256,
+            "import_mode": self.import_mode,
             "total_rows": self.batch.total_rows,
             "posted_rows": self.batch.posted_rows,
             "review_rows": self.batch.review_rows,
             "skipped_rows": self.batch.skipped_rows,
+            "processed_rows": processed_rows,
             "rows": self.report_rows,
         }
-        self.batch.save(update_fields=["status", "posted_rows", "review_rows", "skipped_rows", "report_json"])
+        self.batch.save(
+            update_fields=[
+                "status",
+                "posted_rows",
+                "review_rows",
+                "skipped_rows",
+                "report_json",
+            ]
+        )
