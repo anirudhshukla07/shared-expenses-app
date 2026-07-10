@@ -2,7 +2,11 @@
 
 A Splitwise-style shared-expense application for importing messy flatmate expense data, detecting anomalies, tracking changing group membership over time, and explaining exactly how final balances are calculated.
 
-This project keeps all documentation in one place. Earlier separate notes for scope, decisions, and AI usage have been merged into this unified `README.md`.
+Submission documents are kept separately so reviewers can audit them directly:
+
+- [`SCOPE.md`](SCOPE.md) — requirements, anomaly catalogue, and schema
+- [`DECISIONS.md`](DECISIONS.md) — important choices and trade-offs
+- [`AI_USAGE.md`](AI_USAGE.md) — prompts, failures, and corrections
 
 ---
 
@@ -71,6 +75,9 @@ The assignment asks for `expenses_export.csv`. This implementation also accepts 
   - policy
   - action taken
 - Review gate for rows that require human approval before affecting balances
+- Row-by-row import report (including valid rows), downloadable as CSV or JSON
+- Per-person balance trace showing each expense share, amount paid, and repayment
+- Responsive black/teal product interface inspired by the supplied visual reference
 - CSV and XLSX import support
 - Dockerized local and production-style setup
 
@@ -446,7 +453,9 @@ The app still satisfies the assignment requirement of using relational databases
 4. Upload `expenses_export.csv` or the provided `.xlsx` file from the Import page.
 5. Read the import report.
 6. Approve or reject review-required anomalies.
-7. Open the Balances page to see group balances and settlement suggestions.
+7. Expand a member on Overview to inspect the complete balance calculation trace.
+8. Record a repayment from the Expenses page and confirm balances update.
+9. Download the row-level report as CSV or JSON.
 
 ---
 

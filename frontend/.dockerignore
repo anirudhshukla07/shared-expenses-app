@@ -2,5 +2,3 @@ node_modules
 dist
 .vite
 .env
-
-package-lock.json
