@@ -299,9 +299,6 @@ class ExpenseImportService:
             return
 
         duplicate_review = self.detect_duplicates(row_number, parsed_date, description, payer, amount_inr, participants, row_anomalies)
-        if duplicate_review == LedgerStatus.SKIPPED:
-            self.add_report_only(row_number, row_anomalies)
-            return
 
         needs_review = duplicate_review == LedgerStatus.REVIEW_REQUIRED or any(a["review"] for a in row_anomalies)
         status = LedgerStatus.REVIEW_REQUIRED if needs_review else LedgerStatus.POSTED
@@ -581,9 +578,6 @@ class ExpenseImportService:
             return
         paid_to = self.get_or_create_person(recipients[0])
         duplicate_review = self.detect_settlement_duplicate(row_number, day, payer, paid_to, amount_inr, anomalies)
-        if duplicate_review == LedgerStatus.SKIPPED:
-            self.add_report_only(row_number, anomalies)
-            return
 
         anomalies.append({
             "code": "SETTLEMENT_DETECTED", "severity": ImportAnomaly.Severity.INFO,
@@ -628,10 +622,10 @@ class ExpenseImportService:
             anomalies.append({
                 "code": "DUPLICATE_EXACT", "severity": ImportAnomaly.Severity.WARNING,
                 "message": f"Looks like exact duplicate of row {self.exact_seen[exact_key]}.",
-                "policy": "Exact duplicate rows are not posted twice.",
-                "action": "Skipped duplicate row.", "review": False,
+                "policy": "A human must confirm whether an exact duplicate is legitimate.",
+                "action": "Quarantined candidate; approve to post or reject to skip.", "review": True,
             })
-            return LedgerStatus.SKIPPED
+            return LedgerStatus.REVIEW_REQUIRED
         self.exact_seen[exact_key] = row_number
 
         existing_expenses = (
@@ -654,10 +648,10 @@ class ExpenseImportService:
                 anomalies.append({
                     "code": "DUPLICATE_EXISTING_LEDGER", "severity": ImportAnomaly.Severity.WARNING,
                     "message": f"Looks like exact duplicate of an existing ledger row from import row {expense.raw_row_number or 'unknown'}.",
-                    "policy": "Exact duplicate rows already in the ledger are not posted twice.",
-                    "action": "Skipped duplicate row.", "review": False,
+                    "policy": "A human must confirm whether an exact duplicate is legitimate.",
+                    "action": "Quarantined candidate; approve to post or reject to skip.", "review": True,
                 })
-                return LedgerStatus.SKIPPED
+                return LedgerStatus.REVIEW_REQUIRED
 
         for previous in self.fuzzy_seen:
             same_day = previous["day"] == day
@@ -705,10 +699,10 @@ class ExpenseImportService:
         anomalies.append({
             "code": "DUPLICATE_EXISTING_SETTLEMENT", "severity": ImportAnomaly.Severity.WARNING,
             "message": f"Looks like duplicate of an existing settlement from import row {existing.raw_row_number or 'unknown'}.",
-            "policy": "Exact duplicate settlement rows already in the ledger are not posted twice.",
-            "action": "Skipped duplicate row.", "review": False,
+            "policy": "A human must confirm whether an exact duplicate settlement is legitimate.",
+            "action": "Quarantined candidate; approve to post or reject to skip.", "review": True,
         })
-        return LedgerStatus.SKIPPED
+        return LedgerStatus.REVIEW_REQUIRED
 
     def persist_anomalies(self, row_number, anomalies, expense=None, settlement=None):
         for anomaly in anomalies:

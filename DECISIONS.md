@@ -11,10 +11,10 @@ Each entry records the decision, considered options, chosen approach, rationale,
 
 ## Duplicate handling
 
-- **Options:** auto-delete; post all; exact skip plus fuzzy review.
-- **Chosen:** skip exact duplicates and hold fuzzy matches for a person.
-- **Reason:** exact double charges are clearly unsafe, while near matches may be legitimate.
-- **Trade-off:** fuzzy matching can produce false positives, so it never decides by itself.
+- **Options:** auto-delete; post all; quarantine every exact and fuzzy candidate for review.
+- **Chosen:** create duplicate candidates as `REVIEW_REQUIRED`; a person explicitly approves posting or rejects/skips each row.
+- **Reason:** no candidate changes balances while pending, and no source row is silently deleted or discarded.
+- **Trade-off:** even obvious exact duplicates require a review click, preserving user control at the cost of more work.
 
 ## Re-import behavior
 

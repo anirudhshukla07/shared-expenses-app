@@ -56,11 +56,11 @@ class ImportDuplicateTests(TestCase):
 
         self.assertEqual(first_batch.posted_rows, 1)
         self.assertEqual(second_batch.posted_rows, 0)
-        self.assertEqual(second_batch.review_rows, 0)
-        self.assertEqual(second_batch.skipped_rows, 1)
+        self.assertEqual(second_batch.review_rows, 1)
+        self.assertEqual(second_batch.skipped_rows, 0)
         duplicate = second_batch.anomalies.get(code="DUPLICATE_EXISTING_LEDGER")
-        self.assertFalse(duplicate.requires_review)
-        self.assertIsNone(duplicate.expense)
+        self.assertTrue(duplicate.requires_review)
+        self.assertIsNotNone(duplicate.expense)
         self.assertEqual(
             calculate_group_balances(self.group),
             {"Aisha": Decimal("500.00"), "Rohan": Decimal("-500.00")},
@@ -77,11 +77,11 @@ class ImportDuplicateTests(TestCase):
 
         self.assertEqual(first_batch.posted_rows, 1)
         self.assertEqual(second_batch.posted_rows, 0)
-        self.assertEqual(second_batch.review_rows, 0)
-        self.assertEqual(second_batch.skipped_rows, 1)
+        self.assertEqual(second_batch.review_rows, 1)
+        self.assertEqual(second_batch.skipped_rows, 0)
         duplicate = second_batch.anomalies.get(code="DUPLICATE_EXISTING_SETTLEMENT")
-        self.assertFalse(duplicate.requires_review)
-        self.assertIsNone(duplicate.settlement)
+        self.assertTrue(duplicate.requires_review)
+        self.assertIsNotNone(duplicate.settlement)
         self.assertEqual(
             calculate_group_balances(self.group),
             {"Aisha": Decimal("-500.00"), "Rohan": Decimal("500.00")},

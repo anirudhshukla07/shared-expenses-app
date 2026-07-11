@@ -55,11 +55,11 @@ Each report row includes its CSV row number, detected problems, reasons, policie
 | `SETTLEMENT_DETECTED` | Payment/settlement language is detected | Keep repayments outside expense spending | Reclassify to settlement |
 | `SETTLEMENT_RECIPIENT_UNCLEAR` | Payment has zero or multiple recipients | Never infer a recipient | Skip |
 | `DEPOSIT_PAYMENT_DETECTED` | Deposit language is present | It may not be an ordinary shared expense | Needs review |
-| `DUPLICATE_EXACT` | Same date, normalized description, payer, amount, people in file | Never double-post | Skip later row |
-| `DUPLICATE_EXISTING_LEDGER` | Exact match already exists in ledger | Never double-post | Skip incoming row |
+| `DUPLICATE_EXACT` | Same date, normalized description, payer, amount, people in file | Never remove or post without a human decision | Quarantine for approval/rejection |
+| `DUPLICATE_EXISTING_LEDGER` | Exact match already exists in ledger | Never remove or post without a human decision | Quarantine for approval/rejection |
 | `DUPLICATE_FUZZY_AMOUNT_MISMATCH` | Similar same-day description/people but payer or amount differs | A human chooses the winning row | Needs review |
 | `DUPLICATE_EXISTING_FUZZY` | Incoming row resembles an existing ledger entry | A human chooses the winning row | Needs review |
-| `DUPLICATE_EXISTING_SETTLEMENT` | Same repayment already exists | Never apply repayment twice | Skip incoming row |
+| `DUPLICATE_EXISTING_SETTLEMENT` | Same repayment already exists | Never remove or apply without a human decision | Quarantine for approval/rejection |
 
 ## Relational database schema
 
